@@ -9,7 +9,9 @@ G = 6.67e-11						# Newton's grav. const.
 c = 3.0e8							# speed of light
 sigma_sb = 5.67e-8					# Stefan-Boltzmann const.
 a = 4 * sigma_sb / c 				# radiation const.
-
+M_sun = 1.98847e30
+L_sun = 3.916e26
+R_sun = 6.96342e8
 
 gamma =	(5 / 3)						# Adiabatic index: I *think* the this is 5/3 for an ideal gas
 
@@ -39,8 +41,8 @@ def opacity(rho, T):
 	H_ff = 1.0e24 * (Z + 0.0001) * ((rho * 1e-3) ** 0.7) * (T ** -3.5)
 	H_minus = 2.5e-32 * (Z / 0.02) * ((rho * 1e-3) ** 0.5) * (T ** 9)
 
-	kappa = (1 / H_minus) + (1 / max(H_es, H_ff))
-	return 1 / kappa
+	kappa_inv = (1 / H_minus) + (1 / max(H_es, H_ff))
+	return 1 / kappa_inv
 
 def temp_gradient(rho, T, M, L, r):
 	ideal_gas_P = k_b * T * rho / (mu_weight * m_p)
@@ -65,7 +67,7 @@ def density_gradient(rho, T, M, L, r):
 	T_grad = temp_gradient(rho, T, M, L, r)
 
 	dP_drho = (3 * (np.pi ** 2)) ** (2 / 3)
-	dP_drho *= (h_bar ** 2) / (m_e * m_p)
+	dP_drho *= (h_bar ** 2) / (3 * m_e * m_p)
 	dP_drho *= ((rho / m_p) ** (2 / 3))
 	dP_drho += k_b * T / (mu_weight * m_p)
 
@@ -99,7 +101,7 @@ def ROC_func(x, r):
 
 	return np.array([f0, f1, f2, f3, f4])
 
-def forward_ODE(rho_c, T_c, dr = 1e3):
+def forward_ODE(rho_c, T_c, dr = 1e4):
 	r0 = 1e-3			# 1m start radius
 
 	# Inital mass, luminosity, epsilon, and tau
@@ -155,36 +157,30 @@ def forward_ODE(rho_c, T_c, dr = 1e3):
 
 
 def find_error(L, T, R):
-	numerator = L - 4 * np.pi * sigma_sb * (R ** 2) * (T ** 4)
-	norm = np.sqrt(4 * np.pi * sigma_sb * (R ** 2) * (T ** 4) * L)
+	L_blackbody = 4 * np.pi * sigma_sb * (R ** 2) * (T ** 4)
+	numerator = L - L_blackbody
+	norm = np.sqrt(L_blackbody * L)
 
 	error = numerator / norm
 	return error
 
+def find_surface(tau, r):
+	tau_infinity = tau[-1]
+	dtau = tau_infinity - tau
+
+	R = np.interp(2 / 3, dtau, r)
+	return R
+
 # this assumes that f(p1) > 0 and f(p2) < 0
 def root_finder(p1, p2, T_c, closeness = 0.1):
 	central_density = 0.5 * (p1 + p2)
-
 	r, x = forward_ODE(central_density, T_c)
 	
 	# Find the surface!!
 	tau = x[:, 4]
-	tau_infinity = x[-1, 4]
-	dtau = tau_infinity - tau
-	print(tau_infinity)
-	#plt.plot(r, tau)
-	#plt.plot(r, dtau)
-	#plt.show()
-	surface_condition = np.abs(dtau - 0.6666666)
-	plt.plot(r, surface_condition)
-	plt.show()
-	surface_idx = np.argmin(surface_condition)
-
-	print("Surface Index: %i" % surface_idx)
-	print("Tau Inf - Tau = %.6f" % dtau[surface_idx])
-	R = r[surface_idx]
-	T_surf = x[surface_idx, 1]
-	L = x[surface_idx, 3]
+	R = find_surface(tau, r)
+	T_surf = np.interp(R, r, x[:, 1])
+	L = np.interp(R, r, x[:, 3])
 
 	error = find_error(L, T_surf, R)
 
@@ -193,62 +189,98 @@ def root_finder(p1, p2, T_c, closeness = 0.1):
 	print("")
 	print("Surface Temp: %E" % T_surf)
 	if np.abs(error) < closeness:
-		return p
+		return central_density	
 	elif error > 0:
 		return root_finder(central_density, p2, T_c, closeness = closeness)
 	elif error < 0:
 		return root_finder(p1, central_density, T_c, closeness = closeness)
 
-
-# Run the whole thing
-if __name__ == "__main__":
-	# central temp
-	T_c = 1.571e7
-	rho_c = root_finder(T_c, 1.3081e5, 1.2698e5, closeness = 0.05)
-	r, x = forward_ODE(rho_c, T_c)
-
+def multiplot(r, x, rho_c, T_c):
 	# Find the surface!!
 	tau = x[:, 4]
-	tau_infinity = x[-1, 4]
-	dtau = tau_infinity - tau
-	surface_idx = np.argmin(np.abs(dtau - (2 / 3)))
+	R = find_surface(tau, r)
+	T_surf = np.interp(R, r, x[:, 1])
+	L = np.interp(R, r, x[:, 3])
 
-	R = r[surface_idx]
-	T_surf = x[surface_idx, 1]
-	L = x[surface_idx, 3]
-	M = x[surface_idx, 2]
+	M = np.interp(R, r, x[:, 2])
 	error = find_error(L, T_surf, R)
 
-	print("Central Temp: %E" % T_c)
-	print("Central Density: %E" % rho_c)
-	print("Error: %.2f" % error)
-	print("")
-	print("Mass: %E" % M)
-	print("Radius: %E" % R)
-	print("Luminosity: %E" % L)
-	print("Surface Temp: %E" % T_surf)
+	surface_idx = np.argmin(np.abs(r - R))
+	radius = r[:surface_idx] * 1e-8
+	density = x[:surface_idx, 0]
+	temperature = x[:surface_idx, 1]
+	mass_enc = x[:surface_idx, 2]
+	luminosity = x[:surface_idx, 3]
+	tau = x[:surface_idx, 4]
+
+	fig = plt.figure(figsize = (10, 5))
+	ax1 = fig.add_subplot(2, 3, 1)
+	ax1.set_title("Density")
+	ax1.grid(b = True, axis = "both")
+	ax1.plot(radius, density, color = "green")
+
+	ax2 = fig.add_subplot(2, 3, 2)
+	ax2.set_title("Temperature")
+	ax2.grid(b = True, axis = "both")
+	ax2.plot(radius, temperature, color = "red")
+
+	ax3 = fig.add_subplot(2, 3, 3)
+	ax3.set_title("Enclosed Mass")
+	ax3.grid(b = True, axis = "both")
+	ax3.plot(radius, mass_enc, color = "blue")
+
+	ax4 = fig.add_subplot(2, 3, 4)
+	ax4.set_title("Luminosity")
+	ax4.grid(b = True, axis = "both")
+	ax4.plot(radius, luminosity, color = "orange")
+
+	textblock = "M = %.3fM$_\odot$\n" % (M / M_sun)
+	textblock += "R = %.3fR$_\odot$\n" % (R / R_sun)
+	textblock += "L = %.3fL$_\odot$\n" % (L / L_sun)
+	textblock += "T = %i" % int(T_surf)
+	fig.text(0.5, 0.25, textblock, ha = "center", va = "center", fontsize = 14)
+
+	ax6 = fig.add_subplot(2, 3, 6)
+	ax6.set_title("Optical Depth")
+	ax6.grid(b = True, axis = "both")
+	ax6.plot(radius, tau, color = "black")
+
+	title = "$\\rho_c$=%.3f" % rho_c
+	title = "T$_c$=%.3f" % T_c
+
+	fig.suptitle(title, x = 0.5, y = 0.94, ha = "center", va = "center", fontsize = 16)
+	fig.subplots_adjust(wspace = 0.3, hspace = 0.35)
+	plt.show()
 
 
 
-"""
-rho_c = 1e5
 
-r, x = forward_ODE(rho_c, T_c)
+# Run the whole thing
 
-density = x[:, 0]
-temperature = x[:, 1]
-mass = x[:, 2]
-luminosity = x[:, 3]
-optical_depth = x[:, 4]
+# central temp
+T_c = 1.571e7
+rho_c = 2e5
+#rho_c = root_finder(4e5, 1.9e5, T_c, closeness = 0.05)
+r, x = forward_ODE(rho_c, T_c, dr = 1e4)
 
-print(mass[-1], luminosity[-1], temperature[-1], r[-1] * 1e-3)
-print(error_func(density[0], temperature[-1], luminosity[-1], r[-1]))
+# Find the surface!!
+tau = x[:, 4]
+R = find_surface(tau, r)
+T_surf = np.interp(R, r, x[:, 1])
+L = np.interp(R, r, x[:, 3])
 
-fig = plt.figure(figsize = (8, 5))
-ax = fig.add_subplot(1, 1, 1)
+M = np.interp(R, r, x[:, 2])
+error = find_error(L, T_surf, R)
 
-ax.grid(b = True, axis = "both")
-ax.plot(r, density)
+print("Central Temp: %E" % T_c)
+print("Central Density: %E" % rho_c)
+print("Error: %.2f" % error)
+print("")
+print("Mass: %E" % M)
+print("Radius: %E" % R)
+print("Luminosity: %E" % L)
+print("Surface Temp: %E" % T_surf)
 
-plt.show()
-"""
+print("")
+
+multiplot(r, x, rho_c, T_c)
