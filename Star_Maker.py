@@ -17,13 +17,14 @@ gamma =	(5 / 3)						# Adiabatic index: I *think* the this is 5/3 for an ideal g
 
 ### Stellar composition ###
 X = 0.71
-X_cno = 0.096e-2
+X_cno = 0.03 * X
 Y = 0.271
 Z = 0.0122
 mu_weight = 1 / (2 * X + 0.75 * Y + 0.5 * Z)	# temporary mean molecular weight
 
 # Other stuff idk
-threshold = 1e-3
+threshold = 1e-2
+
 
 def energy_gen(rho, T, mode = "pp"):
 	E_pp = 1.07e-7
@@ -36,6 +37,7 @@ def energy_gen(rho, T, mode = "pp"):
 
 # Not yet modified for He and C stars, only works for H stars
 # *** Is it just T or T / 10^4 or something??? ***
+# this one is right
 def opacity(rho, T):
 	H_es = 0.02 * (1 + X)
 	H_ff = 1.0e24 * (Z + 0.0001) * ((rho * 1e-3) ** 0.7) * (T ** -3.5)
@@ -44,13 +46,14 @@ def opacity(rho, T):
 	kappa_inv = (1 / H_minus) + (1 / max(H_es, H_ff))
 	return 1 / kappa_inv
 
+# this one is right
 def temp_gradient(rho, T, M, L, r):
-	ideal_gas_P = k_b * T * rho / (mu_weight * m_p)
-	degen_P = (3 * (np.pi ** 2)) ** (2 / 3)
-	degen_P *= (h_bar ** 2) / (5 * m_e)
-	degen_P *= ((rho / m_p) ** (5 / 3))
+	ideal_gas_P = k_b * T * rho / (mu_weight * m_p)	
+	degen_P = (3 * (np.pi ** 2)) ** (2 / 3)			
+	degen_P *= (h_bar ** 2) / (5 * m_e)				
+	degen_P *= ((rho / m_p) ** (5 / 3))				
 
-	rad_P = a * (T ** 4) / 3
+	rad_P = a * (T ** 4) / 3						
 	pressure = ideal_gas_P + degen_P + rad_P
 
 	# opacity
@@ -63,6 +66,7 @@ def temp_gradient(rho, T, M, L, r):
 
 	return T_grad
 
+# this one is right
 def density_gradient(rho, T, M, L, r):
 	T_grad = temp_gradient(rho, T, M, L, r)
 
@@ -189,7 +193,7 @@ def root_finder(p1, p2, T_c, closeness = 0.1):
 	print("")
 	print("Surface Temp: %E" % T_surf)
 	if np.abs(error) < closeness:
-		return central_density	
+		return central_density
 	elif error > 0:
 		return root_finder(central_density, p2, T_c, closeness = closeness)
 	elif error < 0:
@@ -234,7 +238,9 @@ def multiplot(r, x, rho_c, T_c):
 	ax4.grid(b = True, axis = "both")
 	ax4.plot(radius, luminosity, color = "orange")
 
-	textblock = "M = %.3fM$_\odot$\n" % (M / M_sun)
+	textblock = "$\\rho_c$=%.3f\n" % rho_c
+	textblock += "T$_c$=%.3f\n" % T_c
+	textblock += "M = %.3fM$_\odot$\n" % (M / M_sun)
 	textblock += "R = %.3fR$_\odot$\n" % (R / R_sun)
 	textblock += "L = %.3fL$_\odot$\n" % (L / L_sun)
 	textblock += "T = %i" % int(T_surf)
@@ -248,39 +254,156 @@ def multiplot(r, x, rho_c, T_c):
 	title = "$\\rho_c$=%.3f" % rho_c
 	title = "T$_c$=%.3f" % T_c
 
-	fig.suptitle(title, x = 0.5, y = 0.94, ha = "center", va = "center", fontsize = 16)
+	#fig.suptitle(title, x = 0.5, y = 0.94, ha = "center", va = "center", fontsize = 16)
 	fig.subplots_adjust(wspace = 0.3, hspace = 0.35)
 	plt.show()
 
 
+def make_star(T_c, rho_overshoot, rho_undershoot, show_plot = True):
+	rho_c = root_finder(rho_overshoot, rho_undershoot, T_c, closeness = 0.05)
+	r, x = forward_ODE(rho_c, T_c, dr = 1e4)
 
+	# Find the surface!!
+	tau = x[:, 4]
+	R = find_surface(tau, r)
+	T_surf = np.interp(R, r, x[:, 1])
+	L = np.interp(R, r, x[:, 3])
+
+	M = np.interp(R, r, x[:, 2])
+	error = find_error(L, T_surf, R)
+
+	print("Central Temp: %E" % T_c)
+	print("Central Density: %E" % rho_c)
+	print("Error: %.2f" % error)
+	print("")
+	print("Mass: %E" % M)
+	print("Radius: %E" % R)
+	print("Luminosity: %E" % L)
+	print("Surface Temp: %E" % T_surf)
+
+	print("")
+
+	if show_plot:
+		multiplot(r, x, rho_c, T_c)
+
+	return np.array([T_c, rho_c, error, M, R, L, T_surf])
+
+# Given a dictionary of where the values are all 1D array-like (with any lengths)
+# and a filename, creates a CSV where the columns are these arrays
+def makeCSV(data, filename):
+    # Create an empty csv file
+    data_file = open(filename, 'w+')
+    
+    dataset = {}
+    for key in data:
+        dataset.update({key: data[key]})
+    
+    # Create a header row
+    num_rows = {}
+    N_rows = 0
+    for key in dataset:
+        data_file.write(key + ',')
+        if not hasattr(dataset[key], '__iter__') and type(dataset[key]) != str:
+            num_rows.update({key: 0})
+        else:
+            current_length = len(dataset[key])
+            num_rows.update({key: current_length})
+            if current_length > N_rows:
+                N_rows = current_length
+    data_file.write('\n')
+    
+    # Add in all the data
+    for i in range(N_rows):
+        for key in dataset:
+          value = dataset[key]
+          if num_rows[key] > i:
+              data_file.write(str(value[i]) + ',')
+          elif i == 0:
+              data_file.write(str(value) + ',')
+          else:
+              data_file.write(',')
+        data_file.write('\n')
+    data_file.close()
+
+# Converts a CSV file to a dictionary of lists where the header row of the CSV becomes the keys
+# of the dictionary and the columns are lists of values that go into their respective key
+# If header_idx > 0, all lines before that will be ignored and the line with that index (starting at 0) 
+# will be used as the header row
+def unpackCSV(filename, empty_value = None, header_idx = 0):
+                        
+    # Get info from the file
+    file_obj = open(filename, 'r')
+    lines = file_obj.readlines()
+    file_obj.close()
+    dataDict = {}
+    
+    key = ''
+    for char in lines[header_idx]:
+        if char == ',' or char == '\n':
+            dataDict[key] = []
+            key = ''
+        else:
+            key += char
+    
+    keys = list(dataDict.keys())
+    for line in lines[header_idx + 1:]:
+        key_idx = 0
+        value = ''
+        lookfor_close_quote = ''
+        for char in line:
+            if lookfor_close_quote != '':
+                if char == lookfor_close_quote:
+                    lookfor_close_quote = ''
+                elif char != ',':
+                    value += char
+            elif char == ',' or char == '\n':
+                if key_idx < len(keys):
+                    key = keys[key_idx]
+                else:
+                    continue
+                if value == '':
+                    if empty_value is not None:
+                        dataDict[key].append(empty_value)
+                else:        
+                    dataDict[key].append(value)
+                key_idx += 1
+                value = ''
+            elif char == '"' or char == "'":
+                lookfor_close_quote = char
+            else:
+                value += char
+    
+    for key in dataDict.keys():
+        dataDict[key] = np.array(dataDict[key])
+    
+    return dataDict
 
 # Run the whole thing
-
 # central temp
-T_c = 1.571e7
-rho_c = 2e5
-#rho_c = root_finder(4e5, 1.9e5, T_c, closeness = 0.05)
-r, x = forward_ODE(rho_c, T_c, dr = 1e4)
+T_list = np.linspace(1.0e5, 1.0e6, 10)
 
-# Find the surface!!
-tau = x[:, 4]
-R = find_surface(tau, r)
-T_surf = np.interp(R, r, x[:, 1])
-L = np.interp(R, r, x[:, 3])
+dataDict = {
+	"Central Temp": [],
+	"Central Dens": [],
+	"Error": [],
+	"Mass": [],
+	"Radius": [],
+	"Luminosity": [],
+	"Surface Temp": []
+}
 
-M = np.interp(R, r, x[:, 2])
-error = find_error(L, T_surf, R)
-
-print("Central Temp: %E" % T_c)
-print("Central Density: %E" % rho_c)
-print("Error: %.2f" % error)
-print("")
-print("Mass: %E" % M)
-print("Radius: %E" % R)
-print("Luminosity: %E" % L)
-print("Surface Temp: %E" % T_surf)
-
-print("")
-
-multiplot(r, x, rho_c, T_c)
+"""
+for T in T_list:
+	p_predicted = 10 ** (13.518 - 1.321 * np.log10(T))
+	p_under = 1.1 * p_predicted
+	p_over = 0.9 * p_predicted
+	T, p, E, M, R, L, T_surf = make_star(T, p_under, p_over, show_plot = False)
+	dataDict["Central Temp"] += [T]
+	dataDict["Central Dens"] += [p]
+	dataDict["Error"] += [E]
+	dataDict["Mass"] += [M]
+	dataDict["Radius"] += [R]
+	dataDict["Luminosity"] += [L]
+	dataDict["Surface Temp"] += [T_surf]
+makeCSV(dataDict, "Run_2021-04-03.csv")
+"""
